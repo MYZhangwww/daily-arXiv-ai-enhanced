@@ -26,6 +26,10 @@ if [ -z "$OPENAI_API_KEY" ]; then
     echo "   export CATEGORIES=\"cs.CV, cs.CL\"                    # 关注分类 / Categories of interest"
     echo "   export MODEL_NAME=\"gpt-4o-mini\"                     # 模型名称 / Model name"
     echo ""
+    echo "📢 飞书通知配置 / Feishu Notification Configuration (Optional):"
+    echo "   export FEISHU_WEBHOOK_URL=\"https://open.feishu.cn/open-apis/bot/v2/hook/...\"  # 飞书webhook地址"
+    echo "   export FEISHU_SECRET=\"your-secret-here\"             # 飞书机器人密钥（可选，用于签名校验）"
+    echo ""
     echo "💡 设置后重新运行此脚本即可进行完整测试 / After setting, rerun this script for complete testing"
     echo "🚀 或者继续运行部分流程（爬取+去重检查）/ Or continue with partial workflow (crawl + dedup check)"
     echo ""
@@ -105,9 +109,23 @@ esac
 
 cd ..
 
-# 第三步：AI处理 / Step 3: AI processing
+# 第三步（可选）：发送飞书通知 / Step 3 (Optional): Send Feishu notification
+if [ -n "$FEISHU_WEBHOOK_URL" ]; then
+    echo "步骤3（可选）：发送飞书通知... / Step 3 (Optional): Sending Feishu notification..."
+    # 使用精选文章模式（默认）/ Use featured papers mode (default)
+    python utils/feishu.py --data "data/${today}.jsonl" --date "$today" --mode featured
+    if [ $? -eq 0 ]; then
+        echo "✅ 飞书通知已发送 / Feishu notification sent"
+    else
+        echo "⚠️  飞书通知发送失败，但继续处理数据 / Feishu notification failed, but continue with data processing"
+    fi
+else
+    echo "⏭️  未设置FEISHU_WEBHOOK_URL，跳过飞书通知 / FEISHU_WEBHOOK_URL not set, skipping Feishu notification"
+fi
+
+# 第四步：AI处理 / Step 4: AI processing
 if [ "$PARTIAL_MODE" = "false" ]; then
-    echo "步骤3：AI增强处理... / Step 3: AI enhancement processing..."
+    echo "步骤4：AI增强处理... / Step 4: AI enhancement processing..."
     cd ai
     python enhance.py --data ../data/${today}.jsonl
     
@@ -121,8 +139,8 @@ else
     echo "⏭️  跳过AI处理（部分模式）/ Skipping AI processing (partial mode)"
 fi
 
-# 第四步：转换为Markdown / Step 4: Convert to Markdown
-echo "步骤4：转换为Markdown... / Step 4: Converting to Markdown..."
+# 第五步：转换为Markdown / Step 5: Convert to Markdown
+echo "步骤5：转换为Markdown... / Step 5: Converting to Markdown..."
 cd to_md
 
 if [ "$PARTIAL_MODE" = "false" ] && [ -f "../data/${today}_AI_enhanced_${LANGUAGE}.jsonl" ]; then
@@ -147,8 +165,8 @@ fi
 
 cd ..
 
-# 第五步：更新文件列表 / Step 5: Update file list
-echo "步骤5：更新文件列表... / Step 5: Updating file list..."
+# 第六步：更新文件列表 / Step 6: Update file list
+echo "步骤6：更新文件列表... / Step 6: Updating file list..."
 ls data/*.jsonl | sed 's|data/||' > assets/file-list.txt
 echo "✅ 文件列表更新完成 / File list updated"
 
