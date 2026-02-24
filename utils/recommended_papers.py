@@ -3,290 +3,210 @@
 推荐论文管理模块 / Recommended Papers Management Module
 
 功能说明 / Features:
-- 保存发送到飞书的精选论文 / Save featured papers sent to Feishu
+- 保存发送到飞书的精选论文到 Git data 分支 / Save featured papers sent to Feishu to Git data branch
 - 管理推荐论文历史 / Manage recommended papers history
 - 支持查询、统计、导出推荐论文 / Support query, statistics, export recommended papers
+- 自动 Git 提交和推送 / Automatic Git commit and push
+- 自动恢复原分支 / Auto restore original branch
 """
 
 import json
 import os
+import sys
+import subprocess
 from typing import Dict, List, Optional
 from datetime import datetime
 from pathlib import Path
 
+# 导入 Git 辅助工具 / Import Git helper
+try:
+    from feishu_git_helper import GitDataHelper, GitDataManager
+except ImportError:
+    # 如果在不同目录运行，尝试添加当前目录到路径 / Try adding current directory to path
+    sys.path.insert(0, os.path.dirname(__file__))
+    from feishu_git_helper import GitDataHelper, GitDataManager
+
 
 class RecommendedPapersManager:
-    """推荐论文管理器 / Recommended Papers Manager"""
+    """推荐论文管理器 (Git-based) / Recommended Papers Manager (Git-based)"""
     
-    def __init__(self, data_dir: str = "data"):
+    def __init__(self, repo_path: str = ".", branch_name: str = "data"):
         """
-        初始化推荐论文管理器
-        Initialize Recommended Papers Manager
+        初始化推荐论文管理器（基于 Git）
+        Initialize Recommended Papers Manager (Git-based)
         
         Args:
-            data_dir (str): 数据目录 / Data directory
+            repo_path (str): Git 仓库路径 / Path to Git repository
+            branch_name (str): 数据分支名称 / Data branch name (default: "data")
         """
-        self.data_dir = data_dir
-        self.recommended_file = os.path.join(data_dir, "recommended_papers.jsonl")
-        
-        # 确保数据目录存在 / Ensure data directory exists
-        Path(data_dir).mkdir(parents=True, exist_ok=True)
+        self.repo_path = Path(repo_path).resolve()
+        self.branch_name = branch_name
+        self.helper = GitDataHelper(str(self.repo_path))
     
     def save_recommended_papers(self, papers: List[Dict], date_str: str) -> bool:
         """
-        保存推荐论文（发送到飞书的论文）
-        Save recommended papers (papers sent to Feishu)
+        保存推荐论文到 Git data 分支（发送到飞书的论文）
+        Save recommended papers to Git data branch (papers sent to Feishu)
         
         Args:
             papers (list): 论文列表 / List of papers
             date_str (str): 日期字符串 / Date string (YYYY-MM-DD)
             
         Returns:
-            bool: 是否成功保存 / Whether saving succeeded
+            bool: 是否成功保存和推送 / Whether saving and pushing succeeded
         """
         try:
-            # 为每篇论文添加推荐日期和元数据 / Add recommendation date and metadata for each paper
+            if not papers:
+                print("⚠️  没有推荐论文需要保存 / No recommended papers to save", file=sys.stderr)
+                return True
+            
+            # 保存原分支 / Save original branch
+            self.helper._save_current_branch()
+            
+            # 确保 data 分支存在和最新 / Ensure data branch exists and is up to date
+            print(f"📌 确保 {self.branch_name} 分支最新... / Ensuring {self.branch_name} branch is up to date...", file=sys.stderr)
+            if not self.helper.fetch_branch(self.branch_name, auto_restore=False):
+                print(f"⚠️  警告：无法获取最新 {self.branch_name} 分支 / Warning: Failed to fetch {self.branch_name} branch", file=sys.stderr)
+                # 继续尝试，可能分支还不存在 / Continue trying, branch might not exist yet
+            
+            # 为每篇论文添加推荐元数据 / Add recommendation metadata for each paper
             for paper in papers:
                 paper['recommended_date'] = date_str
                 paper['recommended_at'] = datetime.now().isoformat()
                 paper['priority_status'] = 'priority' if paper.get('is_priority') else 'normal'
             
-            # 追加到推荐论文文件 / Append to recommended papers file
-            with open(self.recommended_file, 'a', encoding='utf-8') as f:
+            # 创建推荐论文文件（JSONL 格式）/ Create recommended papers file (JSONL format)
+            # 文件名格式: recommended_YYYY-MM-DD.jsonl
+            file_name = f"recommended_{date_str}.jsonl"
+            
+            # 生成临时文件内容 / Generate temp file content
+            temp_file = self.repo_path / f".tmp_{file_name}"
+            with open(temp_file, 'w', encoding='utf-8') as f:
                 for paper in papers:
                     f.write(json.dumps(paper, ensure_ascii=False) + '\n')
             
-            print(f"✅ 保存 {len(papers)} 篇推荐论文 / Saved {len(papers)} recommended papers")
+            print(f"📝 创建推荐论文文件 / Creating recommended papers file: {file_name}", file=sys.stderr)
+            
+            # 调用 Git 命令添加文件到 data 分支 / Add file to data branch using Git
+            code, stdout, stderr = self.helper._run_git_command(f"checkout {self.branch_name}")
+            if code != 0:
+                print(f"❌ 无法切换到 {self.branch_name} 分支 / Failed to checkout {self.branch_name} branch: {stderr}", file=sys.stderr)
+                temp_file.unlink()  # 清理临时文件 / Clean up temp file
+                return False
+            
+            # 确保 data 目录存在 / Ensure data directory exists
+            data_dir = self.repo_path / "data"
+            data_dir.mkdir(exist_ok=True)
+            
+            # 复制临时文件到 data 目录 / Copy temp file to data directory
+            target_file = data_dir / file_name
+            import shutil
+            shutil.copy(temp_file, target_file)
+            temp_file.unlink()  # 清理临时文件 / Clean up temp file
+            
+            print(f"✅ 文件已保存到 data 分支 / File saved to data branch: data/{file_name}", file=sys.stderr)
+            
+            # Git add 和 commit / Git add and commit
+            code, _, stderr = self.helper._run_git_command(f"add data/{file_name}")
+            if code != 0:
+                print(f"❌ 无法 git add / Failed to git add: {stderr}", file=sys.stderr)
+                self.helper._restore_original_branch()
+                return False
+            
+            # 检查是否有变更 / Check if there are changes
+            code, stdout, _ = self.helper._run_git_command("diff --staged --quiet")
+            if code == 0:
+                print("⚠️  没有变更需要提交 / No changes to commit", file=sys.stderr)
+                self.helper._restore_original_branch()
+                return True
+            
+            # 提交 / Commit
+            commit_msg = f"update: recommended papers for {date_str}"
+            code, _, stderr = self.helper._run_git_command(f'commit -m "{commit_msg}"')
+            if code != 0:
+                print(f"❌ 无法 git commit / Failed to git commit: {stderr}", file=sys.stderr)
+                self.helper._restore_original_branch()
+                return False
+            
+            print(f"📝 已提交到 {self.branch_name} 分支 / Committed to {self.branch_name} branch: {commit_msg}", file=sys.stderr)
+            
+            # 推送到远程 / Push to remote
+            print(f"🚀 推送到远程 {self.branch_name} 分支... / Pushing to remote {self.branch_name} branch...", file=sys.stderr)
+            code, _, stderr = self.helper._run_git_command(f"push origin {self.branch_name}")
+            if code != 0:
+                print(f"❌ 无法推送到远程 / Failed to push to remote: {stderr}", file=sys.stderr)
+                self.helper._restore_original_branch()
+                return False
+            
+            print(f"✅ 推送成功 / Successfully pushed to remote", file=sys.stderr)
+            print(f"✅ 保存 {len(papers)} 篇推荐论文 / Saved {len(papers)} recommended papers", file=sys.stderr)
+            
+            # 恢复原分支 / Restore original branch
+            self.helper._restore_original_branch()
             return True
             
         except Exception as e:
-            print(f"❌ 保存推荐论文失败 / Failed to save recommended papers: {e}")
-            return False
-    
-    def get_recommended_papers_by_date(self, date_str: str) -> List[Dict]:
-        """
-        获取指定日期的推荐论文
-        Get recommended papers for a specific date
-        
-        Args:
-            date_str (str): 日期字符串 / Date string (YYYY-MM-DD)
-            
-        Returns:
-            list: 推荐论文列表 / List of recommended papers
-        """
-        papers = []
-        
-        if not os.path.exists(self.recommended_file):
-            return papers
-        
-        try:
-            with open(self.recommended_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    if line.strip():
-                        paper = json.loads(line)
-                        if paper.get('recommended_date') == date_str:
-                            papers.append(paper)
-        
-        except Exception as e:
-            print(f"❌ 读取推荐论文失败 / Failed to read recommended papers: {e}")
-        
-        return papers
-    
-    def get_latest_recommended_papers(self, limit: int = 10) -> List[Dict]:
-        """
-        获取最新推荐的论文
-        Get latest recommended papers
-        
-        Args:
-            limit (int): 返回的论文数量 / Number of papers to return
-            
-        Returns:
-            list: 推荐论文列表 / List of recommended papers
-        """
-        papers = []
-        
-        if not os.path.exists(self.recommended_file):
-            return papers
-        
-        try:
-            with open(self.recommended_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    if line.strip():
-                        papers.append(json.loads(line))
-            
-            # 按推荐时间倒序排列 / Sort by recommendation time in descending order
-            papers.sort(
-                key=lambda x: x.get('recommended_at', ''),
-                reverse=True
-            )
-            
-            return papers[:limit]
-        
-        except Exception as e:
-            print(f"❌ 读取推荐论文失败 / Failed to read recommended papers: {e}")
-        
-        return papers
-    
-    def get_all_recommended_papers(self) -> List[Dict]:
-        """
-        获取所有推荐论文
-        Get all recommended papers
-        
-        Returns:
-            list: 所有推荐论文 / All recommended papers
-        """
-        papers = []
-        
-        if not os.path.exists(self.recommended_file):
-            return papers
-        
-        try:
-            with open(self.recommended_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    if line.strip():
-                        papers.append(json.loads(line))
-        
-        except Exception as e:
-            print(f"❌ 读取推荐论文失败 / Failed to read recommended papers: {e}")
-        
-        return papers
-    
-    def get_recommended_papers_statistics(self) -> Dict:
-        """
-        获取推荐论文统计信息
-        Get recommended papers statistics
-        
-        Returns:
-            dict: 统计信息 / Statistics information
-        """
-        stats = {
-            "总推荐数": 0,
-            "优先级论文": 0,
-            "普通论文": 0,
-            "推荐日期": [],
-            "分类统计": {},
-            "关键字统计": {}
-        }
-        
-        papers = self.get_all_recommended_papers()
-        stats["总推荐数"] = len(papers)
-        
-        # 统计优先级 / Count priority
-        for paper in papers:
-            if paper.get('priority_status') == 'priority':
-                stats["优先级论文"] += 1
-            else:
-                stats["普通论文"] += 1
-        
-        # 统计推荐日期 / Count recommendation dates
-        recommended_dates = {}
-        for paper in papers:
-            date = paper.get('recommended_date')
-            if date:
-                recommended_dates[date] = recommended_dates.get(date, 0) + 1
-        stats["推荐日期"] = dict(sorted(recommended_dates.items(), reverse=True))
-        
-        # 统计分类 / Count categories
-        category_count = {}
-        for paper in papers:
-            category = paper.get('category', 'Unknown')
-            category_count[category] = category_count.get(category, 0) + 1
-        stats["分类统计"] = dict(sorted(category_count.items(), key=lambda x: x[1], reverse=True))
-        
-        return stats
-    
-    def export_to_json(self, output_file: str) -> bool:
-        """
-        导出推荐论文为 JSON 格式
-        Export recommended papers to JSON format
-        
-        Args:
-            output_file (str): 输出文件路径 / Output file path
-            
-        Returns:
-            bool: 是否成功导出 / Whether exporting succeeded
-        """
-        try:
-            papers = self.get_all_recommended_papers()
-            
-            with open(output_file, 'w', encoding='utf-8') as f:
-                json.dump(papers, f, ensure_ascii=False, indent=2)
-            
-            print(f"✅ 导出 {len(papers)} 篇推荐论文到 {output_file}")
-            return True
-        
-        except Exception as e:
-            print(f"❌ 导出推荐论文失败 / Failed to export recommended papers: {e}")
-            return False
-    
-    def export_to_markdown(self, output_file: str, limit: int = None) -> bool:
-        """
-        导出推荐论文为 Markdown 格式
-        Export recommended papers to Markdown format
-        
-        Args:
-            output_file (str): 输出文件路径 / Output file path
-            limit (int): 限制数量 / Limit number
-            
-        Returns:
-            bool: 是否成功导出 / Whether exporting succeeded
-        """
-        try:
-            papers = self.get_all_recommended_papers()
-            if limit:
-                papers = papers[:limit]
-            
-            # 按推荐日期分组 / Group by recommendation date
-            papers_by_date = {}
-            for paper in papers:
-                date = paper.get('recommended_date', 'Unknown')
-                if date not in papers_by_date:
-                    papers_by_date[date] = []
-                papers_by_date[date].append(paper)
-            
-            # 生成 Markdown 内容 / Generate Markdown content
-            content = "# 推荐论文 / Recommended Papers\n\n"
-            content += f"**更新时间:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-            
-            # 按日期倒序显示 / Show in reverse order by date
-            for date in sorted(papers_by_date.keys(), reverse=True):
-                papers_for_date = papers_by_date[date]
-                content += f"## {date}\n\n"
-                content += f"推荐论文数: {len(papers_for_date)}\n\n"
-                
-                # 优先展示优先级论文 / Show priority papers first
-                priority_papers = [p for p in papers_for_date if p.get('priority_status') == 'priority']
-                normal_papers = [p for p in papers_for_date if p.get('priority_status') != 'priority']
-                
-                all_papers_for_date = priority_papers + normal_papers
-                
-                for idx, paper in enumerate(all_papers_for_date, 1):
-                    priority_marker = "⭐ " if paper.get('is_priority') else ""
-                    content += f"### {priority_marker}{idx}. {paper.get('title', 'N/A')}\n\n"
-                    
-                    content += f"- **分类:** {paper.get('category', 'N/A')}\n"
-                    content += f"- **作者:** {paper.get('authors', 'N/A')}\n"
-                    content += f"- **ID:** {paper.get('id', 'N/A')}\n"
-                    
-                    if paper.get('tldr') and paper['tldr'] != 'N/A':
-                        content += f"- **AI 总结:** {paper.get('tldr')}\n"
-                    
-                    if paper.get('url'):
-                        content += f"- **链接:** [{paper.get('id')}]({paper.get('url')})\n"
-                    
-                    content += "\n"
-            
-            with open(output_file, 'w', encoding='utf-8') as f:
-                f.write(content)
-            
-            print(f"✅ 导出推荐论文到 Markdown 文件: {output_file}")
-            return True
-        
-        except Exception as e:
-            print(f"❌ 导出推荐论文失败 / Failed to export recommended papers: {e}")
+            print(f"❌ 保存推荐论文失败 / Failed to save recommended papers: {e}", file=sys.stderr)
+            try:
+                self.helper._restore_original_branch()
+            except:
+                pass
             return False
 
 
+# 快速访问函数 / Quick access functions
+
+def save_recommended_papers(papers: List[Dict], date_str: str, repo_path: str = ".", branch_name: str = "data") -> bool:
+    """
+    快速保存推荐论文到 Git data 分支
+    Quick function to save recommended papers to Git data branch
+    
+    Args:
+        papers (list): 论文列表 / List of papers
+        date_str (str): 日期字符串 / Date string (YYYY-MM-DD)
+        repo_path (str): 仓库路径 / Repository path
+        branch_name (str): 分支名称 / Branch name
+        
+    Returns:
+        bool: 是否成功 / Whether succeeded
+    """
+    try:
+        manager = RecommendedPapersManager(repo_path, branch_name)
+        return manager.save_recommended_papers(papers, date_str)
+    except Exception as e:
+        print(f"❌ 错误 / Error: {e}", file=sys.stderr)
+        return False
+
+
+if __name__ == "__main__":
+    # 演示脚本 / Demo script
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="推荐论文管理器 / Recommended Papers Manager")
+    parser.add_argument("--papers", type=str, help="论文文件路径 (JSONL格式) / Papers file path (JSONL format)")
+    parser.add_argument("--date", type=str, help="推荐日期 (YYYY-MM-DD) / Recommendation date (YYYY-MM-DD)")
+    parser.add_argument("--repo", type=str, default=".", help="仓库路径 / Repository path")
+    parser.add_argument("--branch", type=str, default="data", help="分支名称 / Branch name")
+    
+    args = parser.parse_args()
+    
+    if args.papers and args.date:
+        # 读取论文 / Read papers
+        papers = []
+        with open(args.papers, 'r', encoding='utf-8') as f:
+            for line in f:
+                if line.strip():
+                    papers.append(json.loads(line))
+        
+        # 保存到 Git / Save to Git
+        success = save_recommended_papers(papers, args.date, args.repo, args.branch)
+        
+        if success:
+            print(f"✅ 成功保存 {len(papers)} 篇推荐论文 / Successfully saved {len(papers)} recommended papers")
+        else:
+            print(f"❌ 保存失败 / Failed to save")
+    else:
+        print("❌ 错误：需要指定 --papers 和 --date / Error: --papers and --date are required")
 def main():
     """
     命令行入口 / Command line entry point

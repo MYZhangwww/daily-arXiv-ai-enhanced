@@ -541,11 +541,16 @@ def _send_featured_papers_notification(robot: FeishuRobot, data_content: str, da
     priority_keywords = ["autonomous driving", "自动驾驶", "self driving", "VLA"]
     featured_papers = get_featured_papers(data_content, top_n=10, priority_keywords=priority_keywords)
     
-    # 保存推荐论文 / Save recommended papers
+    # 保存推荐论文到 Git data 分支 / Save recommended papers to Git data branch
     if RecommendedPapersManager:
         try:
-            manager = RecommendedPapersManager()
-            manager.save_recommended_papers(featured_papers, date_str)
+            # 使用 Git-based 管理器保存论文 / Use Git-based manager to save papers
+            manager = RecommendedPapersManager(repo_path=".", branch_name="data")
+            success = manager.save_recommended_papers(featured_papers, date_str)
+            if success:
+                print(f"✅ 推荐论文已保存到 Git data 分支 / Recommended papers saved to Git data branch", file=sys.stderr)
+            else:
+                print(f"⚠️ 推荐论文保存到 Git data 分支失败 / Failed to save recommended papers to Git data branch", file=sys.stderr)
         except Exception as e:
             print(f"⚠️ 保存推荐论文失败: {e} / Failed to save recommended papers: {e}", file=sys.stderr)
     
