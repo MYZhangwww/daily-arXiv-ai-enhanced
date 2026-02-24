@@ -278,31 +278,6 @@ jobs:
             fi
           fi
         done
-    - name: Send Feishu Notification
-      if: steps.dedup_check.outputs.has_new_content == 'true'
-      run: |
-        source .venv/bin/activate
-        today=${{ steps.crawl_step.outputs.crawl_date }}
-        
-        echo "📢 发送飞书通知... / Sending Feishu notification..."
-        
-        # 检查是否设置了飞书 webhook URL / Check if Feishu webhook URL is set
-        if [ -z "${{ secrets.FEISHU_WEBHOOK_URL }}" ]; then
-          echo "⏭️  未设置 FEISHU_WEBHOOK_URL，跳过飞书通知 / FEISHU_WEBHOOK_URL not set, skipping Feishu notification"
-        else
-          # 发送飞书通知（使用精选文章模式）/ Send Feishu notification (featured papers mode)
-          export FEISHU_WEBHOOK_URL="${{ secrets.FEISHU_WEBHOOK_URL }}"
-          export FEISHU_SECRET="${{ secrets.FEISHU_SECRET }}"
-          
-          python utils/feishu.py --data "data/${today}.jsonl" --date "$today" --mode featured
-          
-          if [ $? -eq 0 ]; then
-            echo "✅ 飞书通知已发送 / Feishu notification sent successfully"
-          else
-            echo "⚠️  飞书通知发送失败 / Feishu notification failed"
-            # 不中断工作流，继续执行后续步骤 / Don't stop workflow, continue with next steps
-          fi
-        fi
 
     - name: Prepare data files for data branch
       if: steps.dedup_check.outputs.has_new_content == 'true'
@@ -396,5 +371,34 @@ jobs:
             fi
           fi
         done
+    
+    - name: Send Feishu Notification
+      if: steps.dedup_check.outputs.has_new_content == 'true'
+      run: |
+        git fetch origin main
+        git checkout main
+        git pull origin main || true
+        source .venv/bin/activate
+        today=${{ steps.crawl_step.outputs.crawl_date }}
+        
+        echo "📢 发送飞书通知... / Sending Feishu notification..."
+        
+        # 检查是否设置了飞书 webhook URL / Check if Feishu webhook URL is set
+        if [ -z "${{ secrets.FEISHU_WEBHOOK_URL }}" ]; then
+          echo "⏭️  未设置 FEISHU_WEBHOOK_URL，跳过飞书通知 / FEISHU_WEBHOOK_URL not set, skipping Feishu notification"
+        else
+          # 发送飞书通知（使用精选文章模式）/ Send Feishu notification (featured papers mode)
+          export FEISHU_WEBHOOK_URL="${{ secrets.FEISHU_WEBHOOK_URL }}"
+          export FEISHU_SECRET="${{ secrets.FEISHU_SECRET }}"
+          
+          python utils/feishu.py --from-git --mode featured
+          
+          if [ $? -eq 0 ]; then
+            echo "✅ 飞书通知已发送 / Feishu notification sent successfully"
+          else
+            echo "⚠️  飞书通知发送失败 / Feishu notification failed"
+            # 不中断工作流，继续执行后续步骤 / Don't stop workflow, continue with next steps
+          fi
+        fi
 
 
